@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -11,6 +11,7 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Node,
   type Edge,
   type Connection,
@@ -39,14 +40,18 @@ const defaultEdgeOptions = {
 const connectionLineStyle = { stroke: "#4f46e5", strokeWidth: 2, strokeDasharray: "4 4" }
 
 function BoardInner() {
+  const rf = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<LessonNodeData>>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [students, setStudents] = useState<Student[]>([])
+  const [isTeacher, setIsTeacher] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [boardName, setBoardName] = useState("My Lesson Board")
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const lastMouseRef = useRef<{ x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null)
 
   // Load from storage on mount
   useEffect(() => {
@@ -59,6 +64,33 @@ function BoardInner() {
     }
     setHydrated(true)
   }, [setNodes, setEdges])
+
+  // If logged in as teacher, use Supabase roster for the students panel.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const meRes = await fetch("/api/auth/me", { cache: "no-store" })
+        const meBody = await meRes.json().catch(() => ({}))
+        const role = meBody?.user?.role as string | undefined
+        if (cancelled) return
+        const teacher = role === "teacher"
+        setIsTeacher(teacher)
+        if (teacher) {
+          const rosterRes = await fetch("/api/teacher/roster", { cache: "no-store" })
+          const rosterBody = await rosterRes.json().catch(() => ({}))
+          if (!cancelled && rosterRes.ok) {
+            setStudents(rosterBody?.students ?? [])
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Persist on changes
   useEffect(() => {
@@ -124,6 +156,180 @@ function BoardInner() {
     [setNodes],
   )
 
+  const addTextCardAt = useCallback(
+    (body: string, position: { x: number; y: number }) => {
+      const id = `n-${Date.now()}`
+      const trimmed = body.trim()
+      const title =
+        trimmed.split(/\r?\n/).find((l) => l.trim())?.slice(0, 60) || "Summary"
+
+      const base: LessonNodeData = {
+        kind: "text",
+        title,
+        body: trimmed,
+        color: "slate",
+      }
+
+      setNodes((ns) => [
+        ...ns,
+        {
+          id,
+          type: "lesson",
+          position,
+          data: base,
+          width: 320,
+          height: 260,
+          style: { width: 320, height: 260 },
+        },
+      ])
+      setSelectedNodeId(id)
+    },
+    [setNodes],
+  )
+
+  const pasteToCanvas = useCallback(
+    async (opts?: { clientX?: number; clientY?: number }) => {
+      // Try images first (works in some browsers with permissions).
+      try {
+        // @ts-ignore - ClipboardItem types vary by lib DOM version
+        const items = await navigator.clipboard.read?.()
+        if (items && Array.isArray(items)) {
+          for (const item of items) {
+            const imgType = item.types?.find((t: string) => t.startsWith("image/"))
+            if (imgType) {
+              const blob = await item.getType(imgType)
+              const file = new File([blob], "pasted", { type: imgType })
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const r = new FileReader()
+                r.onload = () => resolve(String(r.result))
+                r.onerror = reject
+                r.readAsDataURL(file)
+              })
+              const clientX = opts?.clientX ?? lastMouseRef.current?.x ?? window.innerWidth / 2
+              const clientY = opts?.clientY ?? lastMouseRef.current?.y ?? window.innerHeight / 2
+              const pos = rf.screenToFlowPosition({ x: clientX, y: clientY })
+              const id = `n-${Date.now()}`
+              const base: LessonNodeData = {
+                kind: "image",
+                title: "Image",
+                src: dataUrl,
+                color: "sky",
+              }
+              setNodes((ns) => [
+                ...ns,
+                {
+                  id,
+                  type: "lesson",
+                  position: pos,
+                  data: base,
+                  width: 320,
+                  height: 260,
+                  style: { width: 320, height: 260 },
+                },
+              ])
+              setSelectedNodeId(id)
+              return
+            }
+          }
+        }
+      } catch {
+        // ignore and try text
+      }
+
+      let text = ""
+      try {
+        // Prefer clipboard API (right-click menu gesture). Falls back to prompt if blocked.
+        text = await navigator.clipboard.readText()
+      } catch {
+        const manual = prompt("Paste text")
+        if (manual === null) return
+        text = manual
+      }
+      const content = text.trim()
+      if (!content) return
+
+      const clientX = opts?.clientX ?? lastMouseRef.current?.x ?? window.innerWidth / 2
+      const clientY = opts?.clientY ?? lastMouseRef.current?.y ?? window.innerHeight / 2
+      const pos = rf.screenToFlowPosition({ x: clientX, y: clientY })
+      addTextCardAt(content, pos)
+    },
+    [addTextCardAt, rf],
+  )
+
+  const onPaneMouseMove = useCallback((evt: React.MouseEvent) => {
+    lastMouseRef.current = { x: evt.clientX, y: evt.clientY }
+  }, [])
+
+  const onPaneContextMenu = useCallback(
+    (evt: React.MouseEvent) => {
+      evt.preventDefault()
+      const flow = rf.screenToFlowPosition({ x: evt.clientX, y: evt.clientY })
+      setMenu({ x: evt.clientX, y: evt.clientY, flowX: flow.x, flowY: flow.y })
+    },
+    [rf],
+  )
+
+  // Ctrl/Cmd+V creates a card if we're not focused in an input/textarea.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === "input" || tag === "textarea" || (target as any)?.isContentEditable) return
+
+      e.preventDefault()
+      const clientX = lastMouseRef.current?.x ?? window.innerWidth / 2
+      const clientY = lastMouseRef.current?.y ?? window.innerHeight / 2
+      const pos = rf.screenToFlowPosition({ x: clientX, y: clientY })
+
+      // Image paste
+      const items = e.clipboardData?.items
+      if (items) {
+        for (const item of Array.from(items)) {
+          if (item.type.startsWith("image/")) {
+            const file = item.getAsFile()
+            if (!file) break
+            const reader = new FileReader()
+            reader.onload = () => {
+              const dataUrl = String(reader.result)
+              const id = `n-${Date.now()}`
+              const base: LessonNodeData = { kind: "image", title: "Image", src: dataUrl, color: "sky" }
+              setNodes((ns) => [
+                ...ns,
+                {
+                  id,
+                  type: "lesson",
+                  position: pos,
+                  data: base,
+                  width: 320,
+                  height: 260,
+                  style: { width: 320, height: 260 },
+                },
+              ])
+              setSelectedNodeId(id)
+            }
+            reader.readAsDataURL(file)
+            return
+          }
+        }
+      }
+
+      // Text paste
+      const text = e.clipboardData?.getData("text/plain") ?? ""
+      if (!text.trim()) return
+      addTextCardAt(text, pos)
+    }
+    window.addEventListener("paste", onPaste as any)
+    return () => window.removeEventListener("paste", onPaste as any)
+  }, [addTextCardAt, rf])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+
   const handleExport = () => {
     const snap: BoardSnapshot = {
       name: boardName,
@@ -165,6 +371,58 @@ function BoardInner() {
     setSelectedNodeId(null)
   }
 
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => null)
+    window.location.href = "/login"
+  }
+
+  const handlePasteSummary = async (student: Student) => {
+    const text = prompt(`Paste ${student.name}'s summary (4 sentences)`)
+    if (text === null) return
+    const content = text.trim()
+    if (!content) return
+
+    // 1) Always create a card on the canvas (what you asked for).
+    const pos = rf.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+    addTextCardAt(`${student.name}\n\n${content}`, pos)
+
+    // 2) If teacher, also save to Supabase as "submitted" so it appears in review/analytics.
+    if (isTeacher) {
+      const res = await fetch("/api/teacher/summaries", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ studentId: student.id, content }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        alert(body?.error || "Saved to canvas, but failed to save to database.")
+        return
+      }
+    }
+
+    setStudents((prev) => prev.map((s) => (s.id === student.id ? { ...s, summaryCount: s.summaryCount + 1 } : s)))
+  }
+
+  const handleArchiveStudent = async (student: Student) => {
+    if (!confirm(`Archive ${student.name}?`)) return
+    const res = await fetch("/api/teacher/students", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ studentId: student.id, archived: true }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      alert(body?.error || "Failed to archive student.")
+      return
+    }
+    setStudents((prev) => prev.filter((s) => s.id !== student.id))
+  }
+
+  const menuStyle = useMemo(() => {
+    if (!menu) return {}
+    return { left: menu.x, top: menu.y }
+  }, [menu])
+
   return (
     <div className="flex flex-col h-dvh bg-slate-100">
       <Toolbar
@@ -174,6 +432,7 @@ function BoardInner() {
         onExport={handleExport}
         onImport={handleImport}
         onClear={handleClear}
+        onLogout={handleLogout}
       />
       <input
         ref={fileInputRef}
@@ -184,7 +443,7 @@ function BoardInner() {
       />
 
       <div className="flex flex-1 min-h-0">
-        <div className="relative flex-1 min-w-0">
+        <div className="relative flex-1 min-w-0" onMouseDown={() => setMenu(null)}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -195,6 +454,8 @@ function BoardInner() {
             nodeTypes={nodeTypes}
             defaultEdgeOptions={defaultEdgeOptions}
             connectionLineStyle={connectionLineStyle}
+            onPaneMouseMove={onPaneMouseMove}
+            onPaneContextMenu={onPaneContextMenu}
             fitView
             fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
             minZoom={0.2}
@@ -240,6 +501,31 @@ function BoardInner() {
               </div>
             </Panel>
           </ReactFlow>
+
+          {menu && (
+            <div
+              className="fixed z-50 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg"
+              style={menuStyle as any}
+              role="menu"
+              onMouseDown={(e) => {
+                // Prevent the pane from closing the menu before button clicks fire.
+                e.stopPropagation()
+              }}
+            >
+              <button
+                className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+                onClick={async () => {
+                  const x = menu.x
+                  const y = menu.y
+                  setMenu(null)
+                  await pasteToCanvas({ clientX: x, clientY: y })
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                Paste
+              </button>
+            </div>
+          )}
         </div>
 
         <StudentsPanel
@@ -247,6 +533,9 @@ function BoardInner() {
           onToggleCollapsed={() => setPanelCollapsed((v) => !v)}
           students={students}
           setStudents={setStudents}
+          managedRoster={isTeacher}
+          onPasteSummary={isTeacher ? handlePasteSummary : undefined}
+          onArchiveStudent={isTeacher ? handleArchiveStudent : undefined}
         />
       </div>
     </div>

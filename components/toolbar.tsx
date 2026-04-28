@@ -1,6 +1,6 @@
 "use client"
 
-import { FileText, ImageIcon, Youtube, Download, Upload, Trash2, GraduationCap } from "lucide-react"
+import { FileText, ImageIcon, Youtube, Download, Upload, Trash2, GraduationCap, LogOut } from "lucide-react"
 import type { CardKind } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -11,6 +11,7 @@ interface ToolbarProps {
   onExport: () => void
   onImport: () => void
   onClear: () => void
+  onLogout?: () => void
 }
 
 export function Toolbar({
@@ -20,6 +21,7 @@ export function Toolbar({
   onExport,
   onImport,
   onClear,
+  onLogout,
 }: ToolbarProps) {
   return (
     <header className="relative z-20 flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white/90 backdrop-blur px-4 py-2.5">
@@ -43,6 +45,9 @@ export function Toolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-1">
+        {onLogout && (
+          <ToolButton icon={<LogOut className="size-3.5" />} label="Logout" onClick={onLogout} variant="ghost" />
+        )}
         <ToolButton icon={<Upload className="size-3.5" />} label="Import" onClick={onImport} variant="ghost" />
         <ToolButton icon={<Download className="size-3.5" />} label="Export" onClick={onExport} variant="ghost" />
         <ToolButton

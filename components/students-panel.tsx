@@ -19,6 +19,9 @@ interface Props {
   onToggleCollapsed: () => void
   students: Student[]
   setStudents: (s: Student[]) => void
+  onPasteSummary?: (student: Student) => void
+  onArchiveStudent?: (student: Student) => void
+  managedRoster?: boolean
 }
 
 export function StudentsPanel({
@@ -26,6 +29,9 @@ export function StudentsPanel({
   onToggleCollapsed,
   students,
   setStudents,
+  onPasteSummary,
+  onArchiveStudent,
+  managedRoster = false,
 }: Props) {
   const [newName, setNewName] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -131,31 +137,33 @@ export function StudentsPanel({
         </div>
       </div>
 
-      {/* Add student */}
-      <div className="flex items-center gap-1.5 border-b border-slate-200 p-3">
-        <input
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addStudent()}
-          placeholder="Add student…"
-          className="flex-1 rounded-md border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-slate-900"
-        />
-        <button
-          onClick={addStudent}
-          className="flex items-center justify-center rounded-md bg-slate-900 text-white size-8 hover:bg-slate-800"
-          aria-label="Add student"
-          title="Add student"
-        >
-          <Plus className="size-4" />
-        </button>
-        <button
-          onClick={addMany}
-          className="rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-          title="Bulk add or edit the roster"
-        >
-          Bulk
-        </button>
-      </div>
+      {/* Add student (local-only) */}
+      {!managedRoster && (
+        <div className="flex items-center gap-1.5 border-b border-slate-200 p-3">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addStudent()}
+            placeholder="Add student…"
+            className="flex-1 rounded-md border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-slate-900"
+          />
+          <button
+            onClick={addStudent}
+            className="flex items-center justify-center rounded-md bg-slate-900 text-white size-8 hover:bg-slate-800"
+            aria-label="Add student"
+            title="Add student"
+          >
+            <Plus className="size-4" />
+          </button>
+          <button
+            onClick={addMany}
+            className="rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            title="Bulk add or edit the roster"
+          >
+            Bulk
+          </button>
+        </div>
+      )}
 
       {/* Leaderboard list */}
       <div className="flex-1 overflow-y-auto">
@@ -257,10 +265,23 @@ export function StudentsPanel({
                     </button>
                   </div>
 
+                  {onPasteSummary && (
+                    <button
+                      onClick={() => onPasteSummary(student)}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 shrink-0"
+                      title="Paste a new summary for this student"
+                    >
+                      Paste
+                    </button>
+                  )}
+
                   <button
-                    onClick={() => removeStudent(student.id)}
+                    onClick={() => {
+                      if (managedRoster) onArchiveStudent?.(student)
+                      else removeStudent(student.id)
+                    }}
                     className="rounded p-1 text-slate-300 opacity-0 hover:bg-rose-50 hover:text-rose-600 group-hover:opacity-100 shrink-0"
-                    aria-label="Remove student"
+                    aria-label={managedRoster ? "Archive student" : "Remove student"}
                   >
                     <X className="size-3.5" />
                   </button>
